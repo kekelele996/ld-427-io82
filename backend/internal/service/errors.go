@@ -8,5 +8,6 @@ var (
 	ErrInvalidLogin        = errors.New("service: invalid username or password")
 	ErrInvalidState        = errors.New("service: invalid state transition")
 	ErrInsufficientBalance = errors.New("service: insufficient available balance")
+	ErrItemQuotaExceeded   = errors.New("service: budget item quota exceeded")
 	ErrForbiddenTransition = errors.New("service: forbidden transition")
 )

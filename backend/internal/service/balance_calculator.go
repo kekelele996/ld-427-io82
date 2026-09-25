@@ -5,6 +5,11 @@ func CalculateAvailable(totalAmount, spentAmount, frozenAmount float64) float64 
 	return totalAmount - spentAmount - frozenAmount
 }
 
+// CalculateItemAvailable 计算预算项可用额度（分项预算 - 已支出 - 审批中占用）。
+func CalculateItemAvailable(budgetAmount, spentAmount, frozenAmount float64) float64 {
+	return budgetAmount - spentAmount - frozenAmount
+}
+
 // CalculateVariance 计算预算项差异金额。
 func CalculateVariance(spentAmount, budgetAmount float64) float64 {
 	return spentAmount - budgetAmount

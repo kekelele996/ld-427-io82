@@ -73,6 +73,33 @@ func (h *ItemHandler) List(c *gin.Context) {
 	response.OK(c, items)
 }
 
+// Get 获取预算项详情。
+// @Summary 获取预算项详情
+// @Tags budget-items
+// @Produce json
+// @Param id path int true "预算表ID"
+// @Param item_id path int true "预算项ID"
+// @Success 200 {object} response.Body
+// @Failure 404 {object} response.Body
+// @Security BearerAuth
+// @Router /budgets/{id}/items/{item_id} [get]
+func (h *ItemHandler) Get(c *gin.Context) {
+	budgetID, ok := pathUint(c, "id")
+	if !ok {
+		return
+	}
+	itemID, ok := pathUint(c, "item_id")
+	if !ok {
+		return
+	}
+	item, err := h.service.Get(context.Background(), budgetID, itemID)
+	if err != nil {
+		handleError(c, err)
+		return
+	}
+	response.OK(c, item)
+}
+
 // Update 更新预算项。
 // @Summary 更新预算项
 // @Tags budget-items

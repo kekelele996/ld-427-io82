@@ -73,3 +73,37 @@ func TestBudgetRepositoryFindByIDNotFound(t *testing.T) {
 		t.Fatalf("error = %v, want ErrNotFound", err)
 	}
 }
+
+func TestBudgetRepositoryFreezeFlow(t *testing.T) {
+	ctx := context.Background()
+	repo := NewBudgetRepository(newTestDB(t))
+
+	sheet := &model.BudgetSheet{ProjectID: "p-1", Name: "预算", TotalAmount: 1000, AvailableAmount: 1000, Status: constants.BudgetStatusActive, CreatedByID: 1, Version: 1}
+	if err := repo.Create(ctx, sheet); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	if err := repo.TryFreeze(ctx, sheet.ID, 400); err != nil {
+		t.Fatalf("try freeze: %v", err)
+	}
+	got, _ := repo.FindByID(ctx, sheet.ID)
+	if got.FrozenAmount != 400 || got.AvailableAmount != 600 {
+		t.Fatalf("frozen=%v available=%v, want 400/600", got.FrozenAmount, got.AvailableAmount)
+	}
+
+	if err := repo.TryFreeze(ctx, sheet.ID, 700); !errors.Is(err, ErrQuotaExceeded) {
+		t.Fatalf("try freeze 700 error = %v, want ErrQuotaExceeded", err)
+	}
+
+	if err := repo.ConvertFreezeToSpent(ctx, sheet.ID, 400); err != nil {
+		t.Fatalf("convert: %v", err)
+	}
+	got, _ = repo.FindByID(ctx, sheet.ID)
+	if got.FrozenAmount != 0 || got.SpentAmount != 400 || got.AvailableAmount != 600 {
+		t.Fatalf("frozen=%v spent=%v available=%v, want 0/400/600", got.FrozenAmount, got.SpentAmount, got.AvailableAmount)
+	}
+
+	if err := repo.ReleaseFreeze(ctx, sheet.ID, 100); !errors.Is(err, ErrConcurrentUpdate) {
+		t.Fatalf("release without freeze error = %v, want ErrConcurrentUpdate", err)
+	}
+}

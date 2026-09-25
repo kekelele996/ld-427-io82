@@ -7,6 +7,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"github.com/renovation/renovation-budget-api/internal/constants"
 	"github.com/renovation/renovation-budget-api/internal/model"
 )
 
@@ -25,6 +26,8 @@ type ExpenseRepository interface {
 	FindByID(ctx context.Context, id uint) (*model.ExpenseRecord, error)
 	List(ctx context.Context, filter ExpenseListFilter) ([]model.ExpenseRecord, int64, error)
 	Update(ctx context.Context, record *model.ExpenseRecord) error
+	// UpdateStatus 仅当当前状态等于 from 时原子地更新为 to，否则返回 ErrConcurrentUpdate。
+	UpdateStatus(ctx context.Context, id uint, from, to constants.ExpenseStatus, fields map[string]any) error
 }
 
 type expenseRepository struct {
@@ -37,7 +40,7 @@ func NewExpenseRepository(db *gorm.DB) ExpenseRepository {
 }
 
 func (r *expenseRepository) Create(ctx context.Context, record *model.ExpenseRecord) error {
-	if err := r.db.WithContext(ctx).Create(record).Error; err != nil {
+	if err := withTx(ctx, r.db).Create(record).Error; err != nil {
 		return fmt.Errorf("create expense record: %w", err)
 	}
 	return nil
@@ -45,7 +48,7 @@ func (r *expenseRepository) Create(ctx context.Context, record *model.ExpenseRec
 
 func (r *expenseRepository) FindByID(ctx context.Context, id uint) (*model.ExpenseRecord, error) {
 	var record model.ExpenseRecord
-	if err := r.db.WithContext(ctx).First(&record, id).Error; err != nil {
+	if err := withTx(ctx, r.db).First(&record, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -56,7 +59,7 @@ func (r *expenseRepository) FindByID(ctx context.Context, id uint) (*model.Expen
 
 func (r *expenseRepository) List(ctx context.Context, filter ExpenseListFilter) ([]model.ExpenseRecord, int64, error) {
 	page, pageSize := normalizePage(filter.Page, filter.PageSize)
-	q := r.db.WithContext(ctx).Model(&model.ExpenseRecord{})
+	q := withTx(ctx, r.db).Model(&model.ExpenseRecord{})
 	if filter.Status != "" {
 		q = q.Where("status = ?", filter.Status)
 	}
@@ -78,8 +81,26 @@ func (r *expenseRepository) List(ctx context.Context, filter ExpenseListFilter) 
 }
 
 func (r *expenseRepository) Update(ctx context.Context, record *model.ExpenseRecord) error {
-	if err := r.db.WithContext(ctx).Save(record).Error; err != nil {
+	if err := withTx(ctx, r.db).Save(record).Error; err != nil {
 		return fmt.Errorf("update expense record %d: %w", record.ID, err)
+	}
+	return nil
+}
+
+// UpdateStatus 以条件更新原子地迁移审批状态，防止并发重复流转。
+func (r *expenseRepository) UpdateStatus(ctx context.Context, id uint, from, to constants.ExpenseStatus, fields map[string]any) error {
+	updates := map[string]any{"status": string(to)}
+	for k, v := range fields {
+		updates[k] = v
+	}
+	res := withTx(ctx, r.db).Model(&model.ExpenseRecord{}).
+		Where("id = ? AND status = ?", id, string(from)).
+		Updates(updates)
+	if res.Error != nil {
+		return fmt.Errorf("update expense record %d status: %w", id, res.Error)
+	}
+	if res.RowsAffected == 0 {
+		return ErrConcurrentUpdate
 	}
 	return nil
 }

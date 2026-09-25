@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"time"
 
+	"github.com/renovation/renovation-budget-api/internal/constants"
 	"github.com/renovation/renovation-budget-api/internal/model"
 	"github.com/renovation/renovation-budget-api/internal/repository"
 )
@@ -59,6 +61,46 @@ func (f *fakeBudgetRepo) Delete(_ context.Context, id uint) error {
 	return nil
 }
 
+func (f *fakeBudgetRepo) TryFreeze(_ context.Context, sheetID uint, amount float64) error {
+	sheet, ok := f.items[sheetID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if sheet.TotalAmount-sheet.SpentAmount-sheet.FrozenAmount < amount {
+		return repository.ErrQuotaExceeded
+	}
+	sheet.FrozenAmount += amount
+	sheet.AvailableAmount = sheet.TotalAmount - sheet.SpentAmount - sheet.FrozenAmount
+	return nil
+}
+
+func (f *fakeBudgetRepo) ReleaseFreeze(_ context.Context, sheetID uint, amount float64) error {
+	sheet, ok := f.items[sheetID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if sheet.FrozenAmount < amount {
+		return repository.ErrConcurrentUpdate
+	}
+	sheet.FrozenAmount -= amount
+	sheet.AvailableAmount = sheet.TotalAmount - sheet.SpentAmount - sheet.FrozenAmount
+	return nil
+}
+
+func (f *fakeBudgetRepo) ConvertFreezeToSpent(_ context.Context, sheetID uint, amount float64) error {
+	sheet, ok := f.items[sheetID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if sheet.FrozenAmount < amount {
+		return repository.ErrConcurrentUpdate
+	}
+	sheet.FrozenAmount -= amount
+	sheet.SpentAmount += amount
+	sheet.AvailableAmount = sheet.TotalAmount - sheet.SpentAmount - sheet.FrozenAmount
+	return nil
+}
+
 type fakeItemRepo struct {
 	nextID uint
 	items  map[uint]*model.BudgetItem
@@ -107,6 +149,47 @@ func (f *fakeItemRepo) Delete(_ context.Context, id uint) error {
 	return nil
 }
 
+func (f *fakeItemRepo) TryFreeze(_ context.Context, itemID uint, amount float64) error {
+	item, ok := f.items[itemID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if item.BudgetAmount-item.SpentAmount-item.FrozenAmount < amount {
+		return repository.ErrQuotaExceeded
+	}
+	item.FrozenAmount += amount
+	item.AvailableAmount = item.BudgetAmount - item.SpentAmount - item.FrozenAmount
+	return nil
+}
+
+func (f *fakeItemRepo) ReleaseFreeze(_ context.Context, itemID uint, amount float64) error {
+	item, ok := f.items[itemID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if item.FrozenAmount < amount {
+		return repository.ErrConcurrentUpdate
+	}
+	item.FrozenAmount -= amount
+	item.AvailableAmount = item.BudgetAmount - item.SpentAmount - item.FrozenAmount
+	return nil
+}
+
+func (f *fakeItemRepo) ConvertFreezeToSpent(_ context.Context, itemID uint, amount float64) error {
+	item, ok := f.items[itemID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if item.FrozenAmount < amount {
+		return repository.ErrConcurrentUpdate
+	}
+	item.FrozenAmount -= amount
+	item.SpentAmount += amount
+	item.VarianceAmount = item.SpentAmount - item.BudgetAmount
+	item.AvailableAmount = item.BudgetAmount - item.SpentAmount - item.FrozenAmount
+	return nil
+}
+
 type fakeExpenseRepo struct {
 	nextID  uint
 	records map[uint]*model.ExpenseRecord
@@ -152,6 +235,40 @@ func (f *fakeExpenseRepo) Update(_ context.Context, record *model.ExpenseRecord)
 	cp := *record
 	f.records[record.ID] = &cp
 	return nil
+}
+
+func (f *fakeExpenseRepo) UpdateStatus(_ context.Context, id uint, from, to constants.ExpenseStatus, fields map[string]any) error {
+	record, ok := f.records[id]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if record.Status != from {
+		return repository.ErrConcurrentUpdate
+	}
+	record.Status = to
+	if v, ok := fields["approved_by_id"]; ok {
+		if uid, ok := v.(uint); ok {
+			record.ApprovedByID = &uid
+		}
+	}
+	if v, ok := fields["approval_comment"]; ok {
+		if comment, ok := v.(string); ok {
+			record.ApprovalComment = comment
+		}
+	}
+	if v, ok := fields["payment_date"]; ok {
+		if ts, ok := v.(time.Time); ok {
+			record.PaymentDate = &ts
+		}
+	}
+	return nil
+}
+
+// fakeTransactor 直接执行函数，内存假仓储本身即原子。
+type fakeTransactor struct{}
+
+func (fakeTransactor) WithinTransaction(ctx context.Context, fn func(txCtx context.Context) error) error {
+	return fn(ctx)
 }
 
 type fakeSupplierRepo struct {

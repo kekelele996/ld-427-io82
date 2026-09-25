@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS budget_items (
     sub_category VARCHAR(128) NOT NULL DEFAULT '',
     budget_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
     spent_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+    frozen_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
+    available_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
     variance_amount DOUBLE PRECISION NOT NULL DEFAULT 0,
     sort_order INT NOT NULL DEFAULT 0,
     remark VARCHAR(512) NOT NULL DEFAULT '',
@@ -113,3 +115,12 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+
+-- 回填分项占用金额：历史审批中的支出此前只在整表冻结。
+UPDATE budget_items
+SET frozen_amount = COALESCE((
+    SELECT SUM(e.amount) FROM expense_records e
+    WHERE e.budget_item_id = budget_items.id AND e.status = 'Submitted'
+), 0);
+UPDATE budget_items
+SET available_amount = budget_amount - spent_amount - frozen_amount;
