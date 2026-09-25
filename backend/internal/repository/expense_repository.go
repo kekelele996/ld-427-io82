@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"gorm.io/gorm"
 
+	"github.com/renovation/renovation-budget-api/internal/constants"
 	"github.com/renovation/renovation-budget-api/internal/model"
 )
 
@@ -19,12 +21,23 @@ type ExpenseListFilter struct {
 	PageSize     int
 }
 
+// ExpenseStatusPatch 支出记录状态流转的更新字段。
+type ExpenseStatusPatch struct {
+	Status          constants.ExpenseStatus
+	ApprovedByID    *uint
+	ApprovalComment string
+	PaymentDate     *time.Time
+}
+
 // ExpenseRepository 支出记录数据访问接口。
 type ExpenseRepository interface {
 	Create(ctx context.Context, record *model.ExpenseRecord) error
 	FindByID(ctx context.Context, id uint) (*model.ExpenseRecord, error)
 	List(ctx context.Context, filter ExpenseListFilter) ([]model.ExpenseRecord, int64, error)
 	Update(ctx context.Context, record *model.ExpenseRecord) error
+	// TransitionStatus 仅当记录当前状态为 wantStatus 时原子更新；
+	// 记录不存在返回 ErrNotFound，状态不匹配返回 ErrInvalidState。
+	TransitionStatus(ctx context.Context, id uint, wantStatus constants.ExpenseStatus, patch ExpenseStatusPatch) error
 }
 
 type expenseRepository struct {
@@ -37,7 +50,7 @@ func NewExpenseRepository(db *gorm.DB) ExpenseRepository {
 }
 
 func (r *expenseRepository) Create(ctx context.Context, record *model.ExpenseRecord) error {
-	if err := r.db.WithContext(ctx).Create(record).Error; err != nil {
+	if err := txFromContext(r.db, ctx).Create(record).Error; err != nil {
 		return fmt.Errorf("create expense record: %w", err)
 	}
 	return nil
@@ -45,7 +58,7 @@ func (r *expenseRepository) Create(ctx context.Context, record *model.ExpenseRec
 
 func (r *expenseRepository) FindByID(ctx context.Context, id uint) (*model.ExpenseRecord, error) {
 	var record model.ExpenseRecord
-	if err := r.db.WithContext(ctx).First(&record, id).Error; err != nil {
+	if err := txFromContext(r.db, ctx).First(&record, id).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, ErrNotFound
 		}
@@ -56,7 +69,7 @@ func (r *expenseRepository) FindByID(ctx context.Context, id uint) (*model.Expen
 
 func (r *expenseRepository) List(ctx context.Context, filter ExpenseListFilter) ([]model.ExpenseRecord, int64, error) {
 	page, pageSize := normalizePage(filter.Page, filter.PageSize)
-	q := r.db.WithContext(ctx).Model(&model.ExpenseRecord{})
+	q := txFromContext(r.db, ctx).Model(&model.ExpenseRecord{})
 	if filter.Status != "" {
 		q = q.Where("status = ?", filter.Status)
 	}
@@ -78,8 +91,42 @@ func (r *expenseRepository) List(ctx context.Context, filter ExpenseListFilter) 
 }
 
 func (r *expenseRepository) Update(ctx context.Context, record *model.ExpenseRecord) error {
-	if err := r.db.WithContext(ctx).Save(record).Error; err != nil {
+	if err := txFromContext(r.db, ctx).Save(record).Error; err != nil {
 		return fmt.Errorf("update expense record %d: %w", record.ID, err)
+	}
+	return nil
+}
+
+func (r *expenseRepository) TransitionStatus(ctx context.Context, id uint, wantStatus constants.ExpenseStatus, patch ExpenseStatusPatch) error {
+	values := map[string]any{
+		"status": patch.Status,
+	}
+	if patch.ApprovedByID != nil {
+		values["approved_by_id"] = *patch.ApprovedByID
+	}
+	if patch.ApprovalComment != "" {
+		values["approval_comment"] = patch.ApprovalComment
+	}
+	if patch.PaymentDate != nil {
+		values["payment_date"] = *patch.PaymentDate
+	}
+	result := txFromContext(r.db, ctx).
+		Model(&model.ExpenseRecord{}).
+		Where("id = ? AND status = ?", id, wantStatus).
+		Updates(values)
+	if result.Error != nil {
+		return fmt.Errorf("transition status for expense record %d: %w", id, result.Error)
+	}
+	if result.RowsAffected == 0 {
+		// 区分不存在与状态已被并发请求改变。
+		var count int64
+		if err := txFromContext(r.db, ctx).Model(&model.ExpenseRecord{}).Where("id = ?", id).Count(&count).Error; err != nil {
+			return fmt.Errorf("check expense record %d after failed transition: %w", id, err)
+		}
+		if count == 0 {
+			return ErrNotFound
+		}
+		return ErrInvalidState
 	}
 	return nil
 }

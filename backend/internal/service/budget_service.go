@@ -119,8 +119,7 @@ func (s *BudgetService) Update(ctx context.Context, actor model.Actor, id uint, 
 	if req.Status != "" {
 		sheet.Status = req.Status
 	}
-	sheet.AvailableAmount = CalculateAvailable(sheet.TotalAmount, sheet.SpentAmount, sheet.FrozenAmount)
-	if err := s.repo.Update(ctx, sheet); err != nil {
+	if err := s.repo.UpdateBasics(ctx, sheet); err != nil {
 		return nil, fmt.Errorf("update budget sheet %d: %w", id, err)
 	}
 	s.invalidateSnapshot(ctx, id)
@@ -142,8 +141,7 @@ func (s *BudgetService) Adjust(ctx context.Context, actor model.Actor, id uint, 
 	}
 	sheet.TotalAmount = req.TotalAmount
 	sheet.Version++
-	sheet.AvailableAmount = CalculateAvailable(sheet.TotalAmount, sheet.SpentAmount, sheet.FrozenAmount)
-	if err := s.repo.Update(ctx, sheet); err != nil {
+	if err := s.repo.UpdateBasics(ctx, sheet); err != nil {
 		return nil, fmt.Errorf("adjust budget sheet %d: %w", id, err)
 	}
 	s.invalidateSnapshot(ctx, id)

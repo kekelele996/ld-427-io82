@@ -60,6 +60,7 @@ func New(deps Dependencies) *gin.Engine {
 		budgets.DELETE("/:id", middleware.RBACMiddleware(middleware.PermissionBudgetWrite), deps.BudgetHandler.Delete)
 		budgets.POST("/:id/adjust", middleware.RBACMiddleware(middleware.PermissionBudgetWrite), deps.BudgetHandler.Adjust)
 		budgets.GET("/:id/items", middleware.RBACMiddleware(middleware.PermissionView), deps.ItemHandler.List)
+		budgets.GET("/:id/items/:item_id", middleware.RBACMiddleware(middleware.PermissionView), deps.ItemHandler.Get)
 		budgets.POST("/:id/items", middleware.RBACMiddleware(middleware.PermissionBudgetWrite), deps.ItemHandler.Create)
 		budgets.PUT("/:id/items/:item_id", middleware.RBACMiddleware(middleware.PermissionBudgetWrite), deps.ItemHandler.Update)
 		budgets.DELETE("/:id/items/:item_id", middleware.RBACMiddleware(middleware.PermissionBudgetWrite), deps.ItemHandler.Delete)

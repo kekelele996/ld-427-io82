@@ -154,12 +154,13 @@ func buildEngine(cfg *config.Config, db *gorm.DB, rdb *redis.Client, logger *slo
 	expenseRepo := repository.NewExpenseRepository(db)
 	supplierRepo := repository.NewSupplierRepository(db)
 	reconciliationRepo := repository.NewReconciliationRepository(db)
+	txManager := repository.NewTransactionManager(db)
 
 	auditService := service.NewAuditService(auditRepo, logger)
 	authService := service.NewAuthService(userRepo, cfg, logger)
 	budgetService := service.NewBudgetService(budgetRepo, itemRepo, auditService, rdb, logger)
 	itemService := service.NewItemService(itemRepo, budgetRepo, auditService, rdb, logger)
-	expenseService := service.NewExpenseService(expenseRepo, itemRepo, budgetRepo, auditService, rdb, logger)
+	expenseService := service.NewExpenseService(expenseRepo, itemRepo, budgetRepo, txManager, auditService, rdb, logger)
 	supplierService := service.NewSupplierService(supplierRepo, auditService, logger)
 	reconciliationService := service.NewReconciliationService(reconciliationRepo, auditService, logger)
 

@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"sync"
 
+	"github.com/renovation/renovation-budget-api/internal/constants"
 	"github.com/renovation/renovation-budget-api/internal/model"
 	"github.com/renovation/renovation-budget-api/internal/repository"
 )
 
 type fakeBudgetRepo struct {
+	mu     sync.Mutex
 	nextID uint
 	items  map[uint]*model.BudgetSheet
 }
@@ -17,6 +20,8 @@ func newFakeBudgetRepo() *fakeBudgetRepo {
 }
 
 func (f *fakeBudgetRepo) Create(_ context.Context, sheet *model.BudgetSheet) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	sheet.ID = f.nextID
 	f.nextID++
 	cp := *sheet
@@ -26,6 +31,8 @@ func (f *fakeBudgetRepo) Create(_ context.Context, sheet *model.BudgetSheet) err
 }
 
 func (f *fakeBudgetRepo) FindByID(_ context.Context, id uint) (*model.BudgetSheet, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	v, ok := f.items[id]
 	if !ok {
 		return nil, repository.ErrNotFound
@@ -35,6 +42,8 @@ func (f *fakeBudgetRepo) FindByID(_ context.Context, id uint) (*model.BudgetShee
 }
 
 func (f *fakeBudgetRepo) List(_ context.Context, filter repository.BudgetListFilter) ([]model.BudgetSheet, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.BudgetSheet
 	for _, v := range f.items {
 		if filter.ProjectID != "" && v.ProjectID != filter.ProjectID {
@@ -49,17 +58,54 @@ func (f *fakeBudgetRepo) List(_ context.Context, filter repository.BudgetListFil
 }
 
 func (f *fakeBudgetRepo) Update(_ context.Context, sheet *model.BudgetSheet) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	cp := *sheet
 	f.items[sheet.ID] = &cp
 	return nil
 }
 
+func (f *fakeBudgetRepo) UpdateBasics(_ context.Context, sheet *model.BudgetSheet) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cur, ok := f.items[sheet.ID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	cur.ProjectID = sheet.ProjectID
+	cur.Name = sheet.Name
+	cur.TotalAmount = sheet.TotalAmount
+	cur.Status = sheet.Status
+	cur.Version = sheet.Version
+	cur.AvailableAmount = CalculateAvailable(cur.TotalAmount, cur.SpentAmount, cur.FrozenAmount)
+	return nil
+}
+
 func (f *fakeBudgetRepo) Delete(_ context.Context, id uint) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.items, id)
 	return nil
 }
 
+func (f *fakeBudgetRepo) AdjustAmounts(_ context.Context, id uint, patch repository.BudgetAmountPatch) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	sheet, ok := f.items[id]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if sheet.SpentAmount+patch.SpentDelta < 0 || sheet.FrozenAmount+patch.FrozenDelta < 0 {
+		return repository.ErrInvalidState
+	}
+	sheet.SpentAmount += patch.SpentDelta
+	sheet.FrozenAmount += patch.FrozenDelta
+	sheet.AvailableAmount = CalculateAvailable(sheet.TotalAmount, sheet.SpentAmount, sheet.FrozenAmount)
+	return nil
+}
+
 type fakeItemRepo struct {
+	mu     sync.Mutex
 	nextID uint
 	items  map[uint]*model.BudgetItem
 }
@@ -69,6 +115,8 @@ func newFakeItemRepo() *fakeItemRepo {
 }
 
 func (f *fakeItemRepo) Create(_ context.Context, item *model.BudgetItem) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	item.ID = f.nextID
 	f.nextID++
 	cp := *item
@@ -78,6 +126,8 @@ func (f *fakeItemRepo) Create(_ context.Context, item *model.BudgetItem) error {
 }
 
 func (f *fakeItemRepo) FindByID(_ context.Context, id uint) (*model.BudgetItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	v, ok := f.items[id]
 	if !ok {
 		return nil, repository.ErrNotFound
@@ -87,6 +137,8 @@ func (f *fakeItemRepo) FindByID(_ context.Context, id uint) (*model.BudgetItem, 
 }
 
 func (f *fakeItemRepo) ListByBudgetID(_ context.Context, budgetSheetID uint) ([]model.BudgetItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.BudgetItem
 	for _, v := range f.items {
 		if v.BudgetSheetID == budgetSheetID {
@@ -97,17 +149,90 @@ func (f *fakeItemRepo) ListByBudgetID(_ context.Context, budgetSheetID uint) ([]
 }
 
 func (f *fakeItemRepo) Update(_ context.Context, item *model.BudgetItem) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	cp := *item
 	f.items[item.ID] = &cp
 	return nil
 }
 
+func (f *fakeItemRepo) UpdateBasics(_ context.Context, item *model.BudgetItem) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cur, ok := f.items[item.ID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if item.BudgetAmount < cur.SpentAmount+cur.FrozenAmount {
+		return repository.ErrBudgetConflict
+	}
+	cur.Category = item.Category
+	cur.SubCategory = item.SubCategory
+	cur.BudgetAmount = item.BudgetAmount
+	cur.SortOrder = item.SortOrder
+	cur.Remark = item.Remark
+	cur.VarianceAmount = CalculateVariance(cur.SpentAmount, cur.BudgetAmount)
+	cur.AvailableAmount = CalculateItemAvailable(cur.BudgetAmount, cur.SpentAmount, cur.FrozenAmount)
+	return nil
+}
+
 func (f *fakeItemRepo) Delete(_ context.Context, id uint) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	delete(f.items, id)
 	return nil
 }
 
+// ReserveFrozen 模拟数据库条件 UPDATE：校验与占用在同一把锁内原子完成。
+func (f *fakeItemRepo) ReserveFrozen(_ context.Context, itemID uint, amount float64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	item, ok := f.items[itemID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if CalculateItemAvailable(item.BudgetAmount, item.SpentAmount, item.FrozenAmount) < amount {
+		return repository.ErrBudgetConflict
+	}
+	item.FrozenAmount += amount
+	item.AvailableAmount = CalculateItemAvailable(item.BudgetAmount, item.SpentAmount, item.FrozenAmount)
+	return nil
+}
+
+func (f *fakeItemRepo) ConfirmFrozen(_ context.Context, itemID uint, amount float64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	item, ok := f.items[itemID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if item.FrozenAmount < amount {
+		return repository.ErrInvalidState
+	}
+	item.FrozenAmount -= amount
+	item.SpentAmount += amount
+	item.AvailableAmount = CalculateItemAvailable(item.BudgetAmount, item.SpentAmount, item.FrozenAmount)
+	item.VarianceAmount = CalculateVariance(item.SpentAmount, item.BudgetAmount)
+	return nil
+}
+
+func (f *fakeItemRepo) ReleaseFrozen(_ context.Context, itemID uint, amount float64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	item, ok := f.items[itemID]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if item.FrozenAmount < amount {
+		return repository.ErrInvalidState
+	}
+	item.FrozenAmount -= amount
+	item.AvailableAmount = CalculateItemAvailable(item.BudgetAmount, item.SpentAmount, item.FrozenAmount)
+	return nil
+}
+
 type fakeExpenseRepo struct {
+	mu      sync.Mutex
 	nextID  uint
 	records map[uint]*model.ExpenseRecord
 }
@@ -117,6 +242,8 @@ func newFakeExpenseRepo() *fakeExpenseRepo {
 }
 
 func (f *fakeExpenseRepo) Create(_ context.Context, record *model.ExpenseRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	record.ID = f.nextID
 	f.nextID++
 	cp := *record
@@ -126,6 +253,8 @@ func (f *fakeExpenseRepo) Create(_ context.Context, record *model.ExpenseRecord)
 }
 
 func (f *fakeExpenseRepo) FindByID(_ context.Context, id uint) (*model.ExpenseRecord, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	v, ok := f.records[id]
 	if !ok {
 		return nil, repository.ErrNotFound
@@ -135,6 +264,8 @@ func (f *fakeExpenseRepo) FindByID(_ context.Context, id uint) (*model.ExpenseRe
 }
 
 func (f *fakeExpenseRepo) List(_ context.Context, filter repository.ExpenseListFilter) ([]model.ExpenseRecord, int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	var out []model.ExpenseRecord
 	for _, v := range f.records {
 		if filter.Status != "" && string(v.Status) != filter.Status {
@@ -149,9 +280,54 @@ func (f *fakeExpenseRepo) List(_ context.Context, filter repository.ExpenseListF
 }
 
 func (f *fakeExpenseRepo) Update(_ context.Context, record *model.ExpenseRecord) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	cp := *record
 	f.records[record.ID] = &cp
 	return nil
+}
+
+func (f *fakeExpenseRepo) TransitionStatus(_ context.Context, id uint, wantStatus constants.ExpenseStatus, patch repository.ExpenseStatusPatch) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	record, ok := f.records[id]
+	if !ok {
+		return repository.ErrNotFound
+	}
+	if record.Status != wantStatus {
+		return repository.ErrInvalidState
+	}
+	record.Status = patch.Status
+	if patch.ApprovedByID != nil {
+		record.ApprovedByID = patch.ApprovedByID
+	}
+	if patch.ApprovalComment != "" {
+		record.ApprovalComment = patch.ApprovalComment
+	}
+	if patch.PaymentDate != nil {
+		record.PaymentDate = patch.PaymentDate
+	}
+	return nil
+}
+
+// fakeTxManager 用一把全局锁串行化事务，模拟数据库事务的原子性。
+type fakeTxManager struct {
+	mu sync.Mutex
+}
+
+func newFakeTxManager() *fakeTxManager {
+	return &fakeTxManager{}
+}
+
+type fakeTxKey struct{}
+
+func (m *fakeTxManager) WithinTransaction(ctx context.Context, fn func(txCtx context.Context) error) error {
+	if ctx.Value(fakeTxKey{}) != nil {
+		return fn(ctx)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return fn(context.WithValue(ctx, fakeTxKey{}, struct{}{}))
 }
 
 type fakeSupplierRepo struct {

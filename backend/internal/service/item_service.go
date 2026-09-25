@@ -36,13 +36,14 @@ func (s *ItemService) Create(ctx context.Context, actor model.Actor, budgetSheet
 		return nil, fmt.Errorf("get budget sheet %d: %w", budgetSheetID, err)
 	}
 	item := &model.BudgetItem{
-		BudgetSheetID:  budgetSheetID,
-		Category:       req.Category,
-		SubCategory:    req.SubCategory,
-		BudgetAmount:   req.BudgetAmount,
-		VarianceAmount: CalculateVariance(0, req.BudgetAmount),
-		SortOrder:      req.SortOrder,
-		Remark:         req.Remark,
+		BudgetSheetID:   budgetSheetID,
+		Category:        req.Category,
+		SubCategory:     req.SubCategory,
+		BudgetAmount:    req.BudgetAmount,
+		AvailableAmount: CalculateItemAvailable(req.BudgetAmount, 0, 0),
+		VarianceAmount:  CalculateVariance(0, req.BudgetAmount),
+		SortOrder:       req.SortOrder,
+		Remark:          req.Remark,
 	}
 	if err := s.repo.Create(ctx, item); err != nil {
 		return nil, fmt.Errorf("create budget item: %w", err)
@@ -59,6 +60,21 @@ func (s *ItemService) List(ctx context.Context, budgetSheetID uint) ([]model.Bud
 		return nil, fmt.Errorf("list budget items: %w", err)
 	}
 	return items, nil
+}
+
+// Get 查询分项详情，包含已支出、审批中占用与可用额度。
+func (s *ItemService) Get(ctx context.Context, budgetSheetID, itemID uint) (*model.BudgetItem, error) {
+	item, err := s.repo.FindByID(ctx, itemID)
+	if err != nil {
+		if errors.Is(err, repository.ErrNotFound) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("get budget item %d: %w", itemID, err)
+	}
+	if item.BudgetSheetID != budgetSheetID {
+		return nil, fmt.Errorf("budget item %d belongs to sheet %d: %w", itemID, item.BudgetSheetID, ErrNotFound)
+	}
+	return item, nil
 }
 
 // Update 更新预算项。
@@ -88,8 +104,10 @@ func (s *ItemService) Update(ctx context.Context, actor model.Actor, budgetSheet
 	if req.Remark != "" {
 		item.Remark = req.Remark
 	}
-	item.VarianceAmount = CalculateVariance(item.SpentAmount, item.BudgetAmount)
-	if err := s.repo.Update(ctx, item); err != nil {
+	if err := s.repo.UpdateBasics(ctx, item); err != nil {
+		if errors.Is(err, repository.ErrBudgetConflict) {
+			return nil, fmt.Errorf("update budget item %d: %w", itemID, ErrItemBudgetExceeded)
+		}
 		return nil, fmt.Errorf("update budget item %d: %w", itemID, err)
 	}
 	s.invalidateBudget(ctx, budgetSheetID)

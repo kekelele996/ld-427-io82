@@ -652,6 +652,34 @@ paths:
       summary: 删除预算项
       tags:
       - budget-items
+    get:
+      parameters:
+      - description: 预算表ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 预算项ID
+        in: path
+        name: item_id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/response.Body'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/response.Body'
+      security:
+      - BearerAuth: []
+      summary: 查询预算项详情
+      tags:
+      - budget-items
     put:
       consumes:
       - application/json
